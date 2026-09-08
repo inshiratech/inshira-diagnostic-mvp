@@ -1,6 +1,6 @@
 # Inshira Manufacturing Diagnostic MVP
 
-An internal Streamlit application for turning 12 weeks of factory data into a concise operational diagnostic.
+A Streamlit application for turning 8–12 weeks of existing factory data into a quantified diagnostic and a repeatable continuous-improvement cycle.
 
 ## What it does
 
@@ -9,7 +9,13 @@ An internal Streamlit application for turning 12 weeks of factory data into a co
 - Calculates production, quality, downtime and changeover KPIs
 - Flags data-quality limitations
 - Ranks improvement opportunities using transparent rules
-- Exports a management-ready HTML diagnostic report
+- Builds an indicative annual loss and recoverable-value register from client-validated assumptions
+- Seeds an editable continuous-improvement register with owners, status, targets, actuals, reviews and learning
+- Exports the action register and a management-ready HTML report
+
+## MVP workflow
+
+`Connect data → Diagnose → Quantify → Prioritise → Improve → Review`
 
 ## Run locally
 
@@ -27,4 +33,3 @@ The tool only requires `date`, `planned_units`, `produced_units`, `good_first_pa
 ## Important limitation
 
 Opportunity values are indicators, not guaranteed financial savings. Financial impact should only be shown after labour, material, energy and capacity assumptions have been validated with the client.
-

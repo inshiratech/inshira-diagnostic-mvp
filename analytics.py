@@ -76,6 +76,15 @@ class DiagnosticResult:
     warnings: list[str]
 
 
+DEFAULT_ASSUMPTIONS = {
+    "working_weeks": 48.0,
+    "unit_value": 8.0,
+    "labour_cost_per_hour": 12.0,
+    "material_cost_per_unit": 3.0,
+    "energy_cost_per_kwh": 0.24,
+}
+
+
 def suggest_mapping(columns: Iterable[str]) -> dict[str, str | None]:
     normalized = {str(c).strip().lower().replace(" ", "_"): str(c) for c in columns}
     result: dict[str, str | None] = {}
@@ -194,7 +203,94 @@ def diagnose(df: pd.DataFrame) -> DiagnosticResult:
     return DiagnosticResult(working, metrics, opportunities, warnings)
 
 
-def build_html_report(result: DiagnosticResult, factory_name: str) -> str:
+def quantify_opportunities(
+    result: DiagnosticResult,
+    assumptions: dict[str, float] | None = None,
+) -> pd.DataFrame:
+    """Create an indicative annual value register from transparent assumptions.
+
+    The calculation deliberately avoids claiming that every theoretical loss is
+    recoverable. Users choose a recovery percentage in the app and validate the
+    assumptions with the manufacturer before using the figures commercially.
+    """
+    a = DEFAULT_ASSUMPTIONS | (assumptions or {})
+    data = result.data
+    days = max(int(data["date"].dt.normalize().nunique()), 1)
+    annual_factor = a["working_weeks"] * 5 / days
+    m = result.metrics
+    rows: list[dict[str, object]] = []
+
+    def add(area: str, loss: str, annual_loss: float, basis: str, action: str, metric: str, baseline: float, target: float, unit: str):
+        if np.isnan(annual_loss) or annual_loss <= 0:
+            return
+        rows.append({
+            "Area": area,
+            "Opportunity": loss,
+            "Annual loss exposure (£)": round(annual_loss, 0),
+            "Calculation basis": basis,
+            "Recommended first action": action,
+            "KPI": metric,
+            "Baseline": round(baseline, 2),
+            "Target": round(target, 2),
+            "Unit": unit,
+        })
+
+    produced = m["produced_units"]
+    ftt_gap_units = max(0.0, produced * (0.91 - m["ftt"])) if not np.isnan(m["ftt"]) else 0.0
+    add("Quality", "FTT gap", ftt_gap_units * a["material_cost_per_unit"] * annual_factor,
+        "Units below 91% FTT × material cost", "Run a Pareto of first-pass defect reasons and validate the top three causes.",
+        "First Time Through", m["ftt"] * 100, 91.0, "%")
+
+    if not np.isnan(m["rejection_rate"]):
+        excess_rejects = max(0.0, produced * (m["rejection_rate"] - 0.01))
+        add("Quality", "Excess rejection", excess_rejects * (a["material_cost_per_unit"] + a["unit_value"]) * annual_factor,
+            "Rejects above 1% × material and lost unit value", "Stratify rejection by defect, product, line and shift.",
+            "Rejection rate", m["rejection_rate"] * 100, 1.0, "%")
+
+    if not np.isnan(m["avg_changeover_minutes"]):
+        total_changeovers = float(data.get("changeovers", pd.Series(dtype=float)).sum())
+        excess_hours = max(0.0, m["avg_changeover_minutes"] - 30.0) * total_changeovers / 60
+        add("Flow", "Excess changeover time", excess_hours * a["labour_cost_per_hour"] * annual_factor,
+            "Minutes above 30-minute reference × changeovers × labour rate", "Observe and separate internal from external setup tasks using SMED.",
+            "Average changeover", m["avg_changeover_minutes"], 30.0, "min")
+
+    if not np.isnan(m["downtime_rate"]):
+        planned_minutes = float(data.get("planned_minutes", pd.Series(dtype=float)).sum())
+        excess_hours = max(0.0, m["downtime_rate"] - 0.02) * planned_minutes / 60
+        add("Reliability", "Excess recorded downtime", excess_hours * a["labour_cost_per_hour"] * annual_factor,
+            "Downtime above 2% × labour rate", "Validate reason-code coverage, including micro-stops, before selecting countermeasures.",
+            "Downtime rate", m["downtime_rate"] * 100, 2.0, "%")
+
+    register = pd.DataFrame(rows)
+    if register.empty:
+        return register
+    return register.sort_values("Annual loss exposure (£)", ascending=False).reset_index(drop=True)
+
+
+def build_improvement_plan(register: pd.DataFrame) -> pd.DataFrame:
+    """Seed an editable PDCA-style action register from the value register."""
+    columns = ["ID", "Opportunity", "KPI", "Baseline", "Target", "Unit", "Owner", "Action", "Status", "Due date", "Actual", "Next review", "Evidence / learning"]
+    if register.empty:
+        return pd.DataFrame(columns=columns)
+    plan = pd.DataFrame({
+        "ID": [f"CI-{i + 1:03d}" for i in range(len(register))],
+        "Opportunity": register["Opportunity"],
+        "KPI": register["KPI"],
+        "Baseline": register["Baseline"],
+        "Target": register["Target"],
+        "Unit": register["Unit"],
+        "Owner": "Unassigned",
+        "Action": register["Recommended first action"],
+        "Status": "Backlog",
+        "Due date": pd.NaT,
+        "Actual": np.nan,
+        "Next review": pd.NaT,
+        "Evidence / learning": "",
+    })
+    return plan[columns]
+
+
+def build_html_report(result: DiagnosticResult, factory_name: str, value_register: pd.DataFrame | None = None, improvement_plan: pd.DataFrame | None = None) -> str:
     m = result.metrics
 
     def pct(value: float) -> str:
@@ -207,11 +303,28 @@ def build_html_report(result: DiagnosticResult, factory_name: str) -> str:
         for _, row in result.opportunities.head(5).iterrows()
     ) or "<tr><td colspan='4'>No rule-based gaps were identified in the supplied data.</td></tr>"
     warnings = "".join(f"<li>{escape(w)}</li>" for w in result.warnings) or "<li>No material data-quality warnings.</li>"
+    value_rows = ""
+    if value_register is not None and not value_register.empty:
+        value_rows = "".join(
+            f"<tr><td>{escape(str(r['Opportunity']))}</td><td>£{float(r['Annual loss exposure (£)']):,.0f}</td><td>{escape(str(r['Calculation basis']))}</td></tr>"
+            for _, r in value_register.iterrows()
+        )
+    else:
+        value_rows = "<tr><td colspan='3'>Insufficient data to quantify an indicative value.</td></tr>"
+    plan_rows = ""
+    if improvement_plan is not None and not improvement_plan.empty:
+        plan_rows = "".join(
+            f"<tr><td>{escape(str(r['ID']))}</td><td>{escape(str(r['Action']))}</td><td>{escape(str(r['Owner']))}</td><td>{escape(str(r['Status']))}</td><td>{escape(str(r['Next review']))}</td></tr>"
+            for _, r in improvement_plan.iterrows()
+        )
+    else:
+        plan_rows = "<tr><td colspan='5'>No improvement actions have been defined.</td></tr>"
     return f"""<!doctype html><html><head><meta charset='utf-8'><title>Inshira Diagnostic</title>
 <style>body{{font-family:Arial,sans-serif;max-width:920px;margin:40px auto;color:#14213d;line-height:1.45}}h1,h2{{color:#0b6b5f}}.grid{{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}}.card{{background:#f1f7f5;padding:16px;border-radius:8px}}.value{{font-size:24px;font-weight:bold}}table{{border-collapse:collapse;width:100%}}th,td{{padding:10px;border-bottom:1px solid #ddd;text-align:left}}small{{color:#555}}</style></head>
 <body><h1>Manufacturing Diagnostic</h1><p><strong>{escape(factory_name)}</strong></p>
 <div class='grid'><div class='card'>Plan attainment<div class='value'>{pct(m['plan_attainment'])}</div></div><div class='card'>First Time Through<div class='value'>{pct(m['ftt'])}</div></div><div class='card'>Rejection rate<div class='value'>{pct(m['rejection_rate'])}</div></div></div>
 <h2>Priority investigation areas</h2><table><tr><th>Area</th><th>Metric</th><th>Current</th><th>Why investigate</th></tr>{rows}</table>
+<h2>Indicative annual loss exposure</h2><table><tr><th>Opportunity</th><th>Exposure</th><th>Basis</th></tr>{value_rows}</table>
+<h2>Continuous improvement plan</h2><table><tr><th>ID</th><th>Action</th><th>Owner</th><th>Status</th><th>Next review</th></tr>{plan_rows}</table>
 <h2>Data limitations</h2><ul>{warnings}</ul>
 <p><small>Generated by Inshira Technologies. The findings are diagnostic indicators, not guaranteed financial savings. Validate operational and financial assumptions with the client before investment decisions.</small></p></body></html>"""
-
