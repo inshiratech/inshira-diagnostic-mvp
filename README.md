@@ -15,7 +15,16 @@ A Streamlit application for turning 8–12 weeks of existing factory data into a
 
 ## MVP workflow
 
-`Connect data → Diagnose → Quantify → Prioritise → Improve → Review`
+`Raw evidence → Ingest and classify → Semantic layer → Human approval → Diagnose → Quantify → Improve → Review`
+
+## Ingestion and semantic layer
+
+- Accepts multiple CSV and XLSX tables in one raw data pack
+- Detects buried header rows and recognises common ERP, production, quality, downtime, changeover and energy labels
+- Preserves file, sheet and field lineage in an interpretation register
+- Consolidates the recognised fields into a canonical operational dataset
+- Retains PDF and image files in an evidence register for later human/AI extraction
+- Requires a named human reviewer to edit and approve the semantic dataset before downstream intelligence is released
 
 ## Run locally
 
