@@ -15,7 +15,7 @@ A Streamlit application for turning 8–12 weeks of existing factory data into a
 
 ## MVP workflow
 
-`Raw evidence → Ingest and classify → Semantic layer → Human approval → Diagnose → Quantify → Improve → Review`
+`Factory data + frontline knowledge → Semantic layer → Human approval → Actionable insights → Improve → Review`
 
 ## Ingestion and semantic layer
 
@@ -25,6 +25,9 @@ A Streamlit application for turning 8–12 weeks of existing factory data into a
 - Consolidates the recognised fields into a canonical operational dataset
 - Retains PDF and image files in an evidence register for later human/AI extraction
 - Requires a named human reviewer to edit and approve the semantic dataset before downstream intelligence is released
+- Provides a one-click interactive demo with synthetic factory records and operator observations
+- Lets operators add an observation, line or mould, process stage, photo or voice evidence and reporter context
+- Requires a manager to validate frontline knowledge before it can influence insights or improvement actions
 
 ## Run locally
 
