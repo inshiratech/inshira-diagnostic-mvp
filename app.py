@@ -9,13 +9,19 @@ import streamlit as st
 
 from analytics import DEFAULT_ASSUMPTIONS, REQUIRED_FIELDS, build_html_report, build_improvement_plan, diagnose, quantify_opportunities
 from ingestion import build_semantic_layer, demo_source_tables, read_uploaded_files
+from knowledge import actionable_frontline_insights, add_frontline_actions, demo_frontline_knowledge, structure_observation
 
 
 st.set_page_config(page_title="Inshira Intelligence Engine", page_icon="⚙️", layout="wide")
 st.markdown("""
 <style>
+.stApp {background:#ffffff;color:#14213d}
+[data-testid="stSidebar"] {background:#f3f8f6}
+[data-testid="stSidebar"] * {color:#14213d}
+.stMarkdown, .stMarkdown p, label, [data-testid="stWidgetLabel"] {color:#14213d}
 .block-container {padding-top:1.4rem;max-width:1350px}
 [data-testid="stMetric"] {background:#f3f8f6;border:1px solid #dcebe6;padding:14px;border-radius:10px}
+[data-testid="stMetric"] * {color:#14213d}
 .stTabs [data-baseweb="tab-list"] {gap:1.1rem}
 .stTabs [aria-selected="true"] {color:#0b6b5f!important;border-bottom-color:#0b6b5f!important}
 .eyebrow {color:#0b6b5f;letter-spacing:.09em;font-weight:700;font-size:.78rem;text-transform:uppercase}
@@ -33,25 +39,40 @@ with st.sidebar:
     st.header("Engagement setup")
     factory_name = st.text_input("Factory name", "Bata Bangladesh — demonstration")
     scope_name = st.text_input("Line / process / product family", "Selected production line")
-    source_mode = st.radio("Data source", ["Use demonstration data", "Upload raw data pack"])
+    source_mode = st.radio("Data source", ["Interactive demo", "Upload factory data"])
     st.markdown("<div class='small-note'>Public prototype: use synthetic or non-confidential data only.</div>", unsafe_allow_html=True)
 
-st.header("1. Raw data ingestion")
+if source_mode == "Interactive demo":
+    launch_col, copy_col = st.columns([1, 2])
+    with launch_col:
+        if st.button("Launch interactive demo", type="primary", width="stretch"):
+            st.session_state.demo_active = True
+            st.session_state.frontline_knowledge = demo_frontline_knowledge()
+            st.session_state.data_approved = False
+    with copy_col:
+        st.info("Loads synthetic factory records and operator observations. Nothing confidential is required.")
+    if not st.session_state.get("demo_active", False):
+        st.stop()
+
+st.header("1. Factory data ingestion")
 st.write("Drop the existing exports and evidence here. Files do not need matching column names, sheet names or header positions.")
-if source_mode == "Use demonstration data":
+if source_mode == "Interactive demo":
     source_tables, evidence, ingestion_warnings = demo_source_tables(Path(__file__).parent / "sample_factory_data.csv")
-    signature = "demo-v2"
+    signature = "interactive-demo-v3"
 else:
     uploaded = st.file_uploader(
-        "Upload CSV, Excel, PDF or image files", type=["csv", "xlsx", "pdf", "png", "jpg", "jpeg"],
+        "Upload CSV, Excel, PDF, text or image files", type=["csv", "xlsx", "pdf", "txt", "png", "jpg", "jpeg"],
         accept_multiple_files=True,
         help="CSV and Excel records are parsed now. PDFs and images are retained in the evidence register for human/AI extraction.",
     )
     if not uploaded:
-        st.info("Upload the raw factory data pack to begin, or use the demonstration data.")
+        st.info("Upload the raw factory data pack to begin, or launch the interactive demo.")
         st.stop()
     source_tables, evidence, ingestion_warnings = read_uploaded_files(uploaded)
     signature = "|".join(f"{file.name}:{file.size}" for file in uploaded)
+    if st.session_state.get("knowledge_signature") != signature:
+        st.session_state.frontline_knowledge = demo_frontline_knowledge().iloc[0:0].copy()
+        st.session_state.knowledge_signature = signature
 
 ingestion = build_semantic_layer(source_tables, evidence, ingestion_warnings)
 s1, s2, s3, s4 = st.columns(4)
@@ -75,7 +96,7 @@ with ingest_tabs[2]:
     else:
         st.dataframe(ingestion.evidence_register, hide_index=True, width="stretch")
 
-st.header("2. Semantic layer and human approval")
+st.header("2. Semantic layer")
 st.write("The semantic layer translates different source labels into one operational language. Review and correct the interpreted records before releasing them for analysis.")
 if st.session_state.get("semantic_signature") != signature:
     st.session_state.semantic_data = ingestion.semantic_data.copy()
@@ -94,9 +115,51 @@ with st.expander("Validation findings", expanded=bool(ingestion.warnings)):
     else:
         st.success("All minimum diagnostic fields were found in the semantic dataset.")
 
-reviewer = st.text_input("Reviewed by", placeholder="Name or role responsible for validating the interpretation")
+st.header("3. Frontline knowledge and human review")
+st.write("Operators and supervisors add what the systems do not capture. Each observation stays pending until a human validates it.")
+
+with st.form("frontline_observation", clear_on_submit=True):
+    f1, f2, f3 = st.columns(3)
+    process_stage = f1.selectbox("Process stage", ["Changeover", "Start-up quality", "Production", "Maintenance", "Inspection", "Other"])
+    asset = f2.text_input("Line, machine or mould", placeholder="Line 1 / Mould A17")
+    category = f3.selectbox("Category", ["Changeover", "Quality", "Downtime", "Materials", "Maintenance", "Other"])
+    observation = st.text_area("Frontline observation", placeholder="What happened, what was different, and what did you have to do?")
+    reporter = st.text_input("Reported by", placeholder="Operator, technician or shift lead")
+    evidence_file = st.file_uploader("Optional photo or voice note", type=["png", "jpg", "jpeg", "wav", "mp3", "m4a"])
+    add_observation = st.form_submit_button("Add frontline observation", type="primary")
+
+if add_observation:
+    if not observation.strip():
+        st.warning("Add an observation before submitting.")
+    else:
+        evidence_label = f"Attached: {evidence_file.name}" if evidence_file else "Text observation"
+        st.session_state.frontline_knowledge = structure_observation(
+            st.session_state.frontline_knowledge, process_stage, asset, category,
+            observation, reporter, evidence_label,
+        )
+        st.success("Observation added for manager review.")
+
+knowledge = st.data_editor(
+    st.session_state.frontline_knowledge,
+    hide_index=True,
+    width="stretch",
+    num_rows="dynamic",
+    column_config={
+        "Observed at": st.column_config.DatetimeColumn(format="DD MMM YYYY, HH:mm"),
+        "Validation": st.column_config.SelectboxColumn(options=["Pending review", "Validated", "Rejected"]),
+    },
+    key="frontline_editor",
+)
+st.session_state.frontline_knowledge = knowledge
+validated_count = int((knowledge["Validation"] == "Validated").sum()) if not knowledge.empty else 0
+pending_count = int((knowledge["Validation"] == "Pending review").sum()) if not knowledge.empty else 0
+k1, k2 = st.columns(2)
+k1.metric("Validated observations", validated_count)
+k2.metric("Awaiting review", pending_count)
+
+reviewer = st.text_input("Reviewed by", placeholder="Manager or process owner validating the data and frontline knowledge")
 approved = st.checkbox(
-    "I have checked the field meanings, totals and known limitations. Approve this semantic dataset for diagnosis.",
+    "I have checked the semantic data, frontline observations and known limitations. Release the actionable insights.",
     value=st.session_state.get("data_approved", False),
 )
 st.session_state.data_approved = approved
@@ -105,7 +168,7 @@ if missing_required:
     st.error("The dataset cannot be passed because minimum fields are missing: " + ", ".join(missing_required))
     st.stop()
 if not approved or not reviewer.strip():
-    st.info("Human approval is required before the diagnostic, loss register and improvement engine are released.")
+    st.info("Human approval is required before actionable insights, the loss register and the improvement engine are released.")
     st.stop()
 
 try:
@@ -114,9 +177,10 @@ except ValueError as exc:
     st.error(str(exc))
     st.stop()
 
-st.success(f"Semantic dataset approved by {reviewer.strip()}. Downstream intelligence is now released.")
-st.header("3. Operational intelligence")
-tabs = st.tabs(["Executive view", "Loss & value register", "Improvement engine", "Data confidence"])
+frontline_insights = actionable_frontline_insights(knowledge)
+st.success(f"Data and frontline knowledge approved by {reviewer.strip()}. Actionable insights are now released.")
+st.header("4. Actionable insights and continuous improvement")
+tabs = st.tabs(["Actionable insights", "Loss & value register", "Improvement engine", "Data confidence"])
 
 with tabs[0]:
     m = result.metrics
@@ -149,6 +213,11 @@ with tabs[0]:
         display["Current"] = display.apply(lambda row: f"{row['Current']:.1f} {row['Unit']}", axis=1)
         display["Reference"] = display.apply(lambda row: f"{row['Reference']:.1f} {row['Unit']}", axis=1)
         st.dataframe(display[["Area", "Metric", "Current", "Reference", "Why investigate"]], hide_index=True, width="stretch")
+    st.subheader("What frontline knowledge adds")
+    if frontline_insights.empty:
+        st.info("No validated frontline observations are available yet.")
+    else:
+        st.dataframe(frontline_insights, hide_index=True, width="stretch")
 
 with tabs[1]:
     st.subheader("Quantify the case for action")
@@ -175,9 +244,10 @@ with tabs[1]:
 with tabs[2]:
     st.subheader("Continuous Improvement Engine")
     st.caption("Assign actions, update actual KPI results, record learning and set the next review.")
-    plan_signature = (signature, factory_name, scope_name)
+    knowledge_state = tuple(zip(knowledge["ID"].astype(str), knowledge["Validation"].astype(str))) if not knowledge.empty else ()
+    plan_signature = (signature, factory_name, scope_name, knowledge_state)
     if "improvement_plan" not in st.session_state or st.session_state.get("plan_scope") != plan_signature:
-        st.session_state.improvement_plan = build_improvement_plan(register)
+        st.session_state.improvement_plan = add_frontline_actions(build_improvement_plan(register), frontline_insights)
         st.session_state.plan_scope = plan_signature
     plan = st.data_editor(
         st.session_state.improvement_plan, hide_index=True, width="stretch", num_rows="dynamic",

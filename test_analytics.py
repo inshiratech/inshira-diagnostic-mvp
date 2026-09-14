@@ -3,6 +3,7 @@ from pathlib import Path
 
 from analytics import build_improvement_plan, diagnose, quantify_opportunities, standardize, suggest_mapping
 from ingestion import build_semantic_layer, clean_unformatted_table, demo_source_tables
+from knowledge import actionable_frontline_insights, add_frontline_actions, demo_frontline_knowledge, structure_observation
 
 
 def test_sample_data_matches_expected_diagnostic_profile():
@@ -60,3 +61,25 @@ def test_demo_raw_pack_consolidates_to_required_semantics():
     assert set(["date", "planned_units", "produced_units", "good_first_pass_units", "rejected_units"]).issubset(ingested.semantic_data.columns)
     assert int(ingested.semantic_data["produced_units"].sum()) == 11350
     assert len(ingested.evidence_register) == 1
+
+
+def test_frontline_knowledge_requires_validation_before_creating_insights():
+    knowledge = demo_frontline_knowledge()
+    insights = actionable_frontline_insights(knowledge)
+
+    assert set(insights["Source IDs"].str.cat(sep=", ").replace(",", "").split()).issuperset({"FK-001", "FK-002"})
+    assert not insights["Source IDs"].str.contains("FK-003").any()
+
+
+def test_new_observation_is_pending_and_validated_knowledge_seeds_actions():
+    knowledge = structure_observation(
+        demo_frontline_knowledge(), "Maintenance", "Line 1", "Maintenance",
+        "The bearing noise returned after the last adjustment.", "Technician", "Voice note",
+    )
+    assert knowledge.iloc[-1]["Validation"] == "Pending review"
+
+    knowledge.loc[knowledge["ID"] == "FK-004", "Validation"] = "Validated"
+    insights = actionable_frontline_insights(knowledge)
+    plan = add_frontline_actions(pd.DataFrame(columns=build_improvement_plan(pd.DataFrame()).columns), insights)
+    assert not plan.empty
+    assert plan["Evidence / learning"].str.contains("Frontline evidence").all()

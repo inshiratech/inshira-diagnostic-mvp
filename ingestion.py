@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import csv
 from io import BytesIO
+from io import StringIO
 from pathlib import Path
 import re
 from typing import Iterable
@@ -67,9 +69,12 @@ def clean_unformatted_table(raw: pd.DataFrame) -> tuple[pd.DataFrame, int]:
 def _read_csv(payload: bytes) -> pd.DataFrame:
     for encoding in ("utf-8-sig", "utf-8", "latin-1"):
         try:
-            return pd.read_csv(BytesIO(payload), header=None, encoding=encoding)
+            decoded = payload.decode(encoding)
         except UnicodeDecodeError:
             continue
+        rows = list(csv.reader(StringIO(decoded)))
+        width = max((len(row) for row in rows), default=0)
+        return pd.DataFrame([row + [None] * (width - len(row)) for row in rows])
     raise ValueError("The CSV encoding could not be read.")
 
 
@@ -175,4 +180,3 @@ def build_semantic_layer(tables: list[SourceTable], evidence: pd.DataFrame | Non
         evidence_register=evidence if evidence is not None else pd.DataFrame(),
         warnings=warnings,
     )
-
